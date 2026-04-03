@@ -2,12 +2,20 @@ export default async function handler(req, res) {
     console.log("✅ PROXY HIT");
 
     try {
-        const { path = "", ...params } = req.query;
+        let { path, ...params } = req.query;
 
-        // 🔥 Build query string
+        // 🔥 SAFETY FIX
+        if (!path) {
+            return res.status(400).json({ error: "Missing path" });
+        }
+
+        // ensure path starts with /
+        if (!path.startsWith("/")) {
+            path = "/" + path;
+        }
+
         const query = new URLSearchParams(params).toString();
 
-        // ✅ USE V4 API (same as local)
         const url = `https://open-api-v4.coinglass.com${path}?${query}`;
 
         console.log("URL:", url);
@@ -25,7 +33,7 @@ export default async function handler(req, res) {
 
         res.status(response.status).send(text);
     } catch (err) {
-        console.error("❌ PROXY ERROR:", err);
-        res.status(500).json({ error: "Proxy failed" });
+        console.error("❌ PROXY ERROR:", err.message);
+        res.status(500).json({ error: err.message });
     }
 }
