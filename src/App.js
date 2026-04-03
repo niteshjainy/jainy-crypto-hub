@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useCallback, useState } from "react";
 import SmartDashboard from "./components/SmartDashboard";
 import MiniChart from "./components/MiniChart";
 import useSyncedCharts from "./useSyncedCharts";
@@ -8,12 +8,12 @@ export default function App() {
 
   useSyncedCharts(charts);
 
-  const handleChartReady = (chart) => {
+  const handleChartReady = useCallback((chart) => {
     setCharts((prev) => {
       if (prev.includes(chart)) return prev;
       return [...prev, chart];
     });
-  };
+  }, []);
 
   return (
     <div className="bg-[#020617] min-h-screen text-white px-3 py-4 md:px-6">

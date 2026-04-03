@@ -46,7 +46,7 @@ export default function MiniChart({ onReady }) {
     }
 
     load();
-  }, []);
+  }, [onReady]);
 
   return <div className="h-[200px]" ref={chartRef} />;
 }
