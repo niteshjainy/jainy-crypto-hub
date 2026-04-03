@@ -35,30 +35,33 @@ async function fetchWithCache(key, url, params) {
   return res;
 }
 
-// ✅ PRICE
+// ✅ PRICE (same as local working)
 export const getPrice = (interval = "4h") =>
   fetchWithCache(`price-${interval}`, "/futures/price/history", {
-    symbol: "BTC", // ✅ FIXED
+    exchange: "Binance",
+    symbol: "BTCUSDT",
     interval,
   });
 
-// ✅ OI
+// ✅ OPEN INTEREST (V4 style)
 export const getOI = (interval = "4h") =>
-  fetchWithCache(`oi-${interval}`, "/futures/openInterest/history", {
+  fetchWithCache(`oi-${interval}`, "/futures/open-interest/aggregated-history", {
     symbol: "BTC",
     interval,
   });
 
-// ✅ FUNDING
+// ✅ FUNDING RATE (V4 style)
 export const getFunding = (interval = "4h") =>
-  fetchWithCache(`fr-${interval}`, "/futures/fundingRate/history", {
-    symbol: "BTC",
+  fetchWithCache(`fr-${interval}`, "/futures/funding-rate/history", {
+    exchange: "Binance",
+    symbol: "BTCUSDT",
     interval,
   });
 
-// ✅ LIQUIDATION
+// ✅ LIQUIDATION (V4 style)
 export const getLiquidation = (interval = "4h") =>
-  fetchWithCache(`liq-${interval}`, "/futures/liquidation/history", {
+  fetchWithCache(`liq-${interval}`, "/futures/liquidation/aggregated-history", {
     symbol: "BTC",
     interval,
+    exchange_list: "Binance,OKX,Bybit",
   });

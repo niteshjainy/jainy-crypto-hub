@@ -1,18 +1,15 @@
 export default async function handler(req, res) {
     try {
-        let { path, ...params } = req.query;
+        const { path, ...params } = req.query;
 
         if (!path) {
             return res.status(400).json({ error: "Missing path" });
         }
 
-        if (!path.startsWith("/")) {
-            path = "/" + path;
-        }
-
         const query = new URLSearchParams(params).toString();
 
-        const url = `https://open-api.coinglass.com/api/pro/v1${path}?${query}`;
+        // ✅ SAME AS LOCAL (V4)
+        const url = `https://open-api-v4.coinglass.com${path}?${query}`;
 
         const response = await fetch(url, {
             headers: {
@@ -20,9 +17,9 @@ export default async function handler(req, res) {
             },
         });
 
-        const data = await response.text();
+        const text = await response.text();
 
-        res.status(response.status).send(data);
+        res.status(response.status).send(text);
     } catch (err) {
         res.status(500).json({ error: err.message });
     }
