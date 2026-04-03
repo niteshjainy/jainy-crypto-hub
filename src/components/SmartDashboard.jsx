@@ -1,187 +1,236 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, useRef } from "react";
 import { getLiquidation, getOI, getFunding, getPrice } from "../services/api";
 
-const TIMEFRAMES = ["4h", "1d", "1w"];
-
-function calculateSignal(liqData, oiData, frData) {
-  const latestLiq = liqData.at(-1);
-  const last3OI = oiData.slice(-3);
-  const latestFR = frData.at(-1);
+function calculateSignal(liq, oi, fr) {
+  const latestLiq = liq.at(-1);
+  const last3OI = oi.slice(-3);
+  const latestFR = fr.at(-1);
 
   const longLiq = Number(latestLiq?.aggregated_long_liquidation_usd || 0);
   const shortLiq = Number(latestLiq?.aggregated_short_liquidation_usd || 0);
+  const oiTrendUp = Number(last3OI[2]?.close) > Number(last3OI[0]?.close);
+  const frValue = Number(latestFR?.close || 0);
 
-  const oiTrendUp =
-    Number(last3OI?.[2]?.close || 0) > Number(last3OI?.[0]?.close || 0);
+  let score = 50;
 
-  const frValue = Number(latestFR?.close || latestFR?.funding_rate || 0);
+  if (shortLiq > longLiq) score += 20;
+  else score -= 20;
 
-  let score = 0;
-
-  if (shortLiq > longLiq) score += 30;
-  else score -= 30;
-
-  if (oiTrendUp) score += 20;
+  if (oiTrendUp) score += 15;
   else score -= 15;
 
-  if (frValue < 0) score += 15;
+  if (frValue < 0) score += 10;
   else score -= 10;
 
-  if (score >= 35) return "🚀 BULLISH";
-  if (score <= -35) return "📉 BEARISH";
-
-  return "⚖️ NEUTRAL";
+  return score;
 }
 
-function getTradeSetup(signal, price) {
-  if (!price) return null;
+function getTrade(signalScore, price) {
+  if (signalScore < 60) return null;
 
-  if (signal.includes("BULLISH")) {
+  const bullish = signalScore >= 60;
+
+  if (bullish) {
     return {
-      entry: price,
-      sl: price * 0.98,
-      target: price * 1.03,
       type: "LONG",
-    };
-  }
-
-  if (signal.includes("BEARISH")) {
-    return {
       entry: price,
-      sl: price * 1.02,
-      target: price * 0.97,
+      sl: price * 0.985,
+      tp1: price * 1.02,
+      final: price * 1.04,
+      partial: false,
+      startTime: Date.now(),
+      confidence: signalScore,
+    };
+  } else {
+    return {
       type: "SHORT",
+      entry: price,
+      sl: price * 1.015,
+      tp1: price * 0.98,
+      final: price * 0.96,
+      partial: false,
+      startTime: Date.now(),
+      confidence: signalScore,
     };
   }
-
-  return null;
 }
 
 export default function SmartDashboard() {
-  const [signals, setSignals] = useState({});
   const [price, setPrice] = useState(0);
   const [activeTrade, setActiveTrade] = useState(null);
   const [stats, setStats] = useState({ wins: 0, losses: 0 });
+  const [history, setHistory] = useState([]);
+  const [confidence, setConfidence] = useState(0);
+
+  const cachedSignal = useRef(null);
 
   useEffect(() => {
-    async function fetchAll() {
-      const results = {};
+    const s = localStorage.getItem("stats");
+    const h = localStorage.getItem("history");
 
-      for (let tf of TIMEFRAMES) {
-        try {
-          const [liq, oi, fr] = await Promise.all([
-            getLiquidation(tf),
-            getOI(tf),
-            getFunding(tf),
-          ]);
+    if (s) setStats(JSON.parse(s));
+    if (h) setHistory(JSON.parse(h));
 
-          results[tf] = calculateSignal(
-            liq?.data?.data || [],
-            oi?.data?.data || [],
-            fr?.data?.data || [],
-          );
-        } catch {}
+    Notification.requestPermission();
+  }, []);
+
+  // 🔥 SIGNAL FETCH (30 sec)
+  useEffect(() => {
+    async function fetchSignal() {
+      const [liq, oi, fr] = await Promise.all([
+        getLiquidation("4h"),
+        getOI("4h"),
+        getFunding("4h"),
+      ]);
+
+      const score = calculateSignal(
+        liq?.data?.data || [],
+        oi?.data?.data || [],
+        fr?.data?.data || [],
+      );
+
+      setConfidence(score);
+      cachedSignal.current = score;
+    }
+
+    fetchSignal();
+    const interval = setInterval(fetchSignal, 30000);
+    return () => clearInterval(interval);
+  }, []);
+
+  // 🔥 PRICE FETCH (5 sec)
+  useEffect(() => {
+    async function fetchPrice() {
+      const res = await getPrice("4h");
+      const latest = Number(res?.data?.data?.at(-1)?.close || 0);
+
+      setPrice(latest);
+
+      const score = cachedSignal.current;
+
+      // ENTRY
+      if (!activeTrade && score) {
+        const newTrade = getTrade(score, latest);
+
+        if (newTrade) {
+          setActiveTrade(newTrade);
+
+          new Notification("🚀 New Trade", {
+            body: `${newTrade.type} | Conf: ${score}%`,
+          });
+        }
       }
 
-      const priceRes = await getPrice("4h");
-      const latestPrice = Number(priceRes?.data?.data?.at(-1)?.close) || 0;
-
-      setSignals(results);
-      setPrice(latestPrice);
-
-      // 🔥 FINAL SIGNAL (multi TF)
-      const values = Object.values(results);
-
-      const bullish = values.filter((s) => s?.includes("BULLISH")).length;
-
-      const bearish = values.filter((s) => s?.includes("BEARISH")).length;
-
-      let finalSignal = "⚖️ NEUTRAL";
-
-      if (bullish >= 2) finalSignal = "🚀 BULLISH";
-      else if (bearish >= 2) finalSignal = "📉 BEARISH";
-
-      const newTrade = getTradeSetup(finalSignal, latestPrice);
-
-      // ✅ only 1 trade
-      if (!activeTrade && newTrade && finalSignal !== "⚖️ NEUTRAL") {
-        setActiveTrade({
-          ...newTrade,
-          time: new Date().toLocaleTimeString(),
-        });
-      }
-
-      // 🔥 result tracking
+      // TRACK
       if (activeTrade) {
-        if (activeTrade.type === "LONG") {
-          if (latestPrice >= activeTrade.target) {
-            setStats((s) => ({ ...s, wins: s.wins + 1 }));
-            setActiveTrade(null);
-          } else if (latestPrice <= activeTrade.sl) {
-            setStats((s) => ({ ...s, losses: s.losses + 1 }));
-            setActiveTrade(null);
+        let trade = { ...activeTrade };
+
+        // PARTIAL
+        if (!trade.partial) {
+          if (
+            (trade.type === "LONG" && latest >= trade.tp1) ||
+            (trade.type === "SHORT" && latest <= trade.tp1)
+          ) {
+            trade.partial = true;
+            trade.sl = trade.entry;
           }
         }
 
-        if (activeTrade.type === "SHORT") {
-          if (latestPrice <= activeTrade.target) {
-            setStats((s) => ({ ...s, wins: s.wins + 1 }));
-            setActiveTrade(null);
-          } else if (latestPrice >= activeTrade.sl) {
-            setStats((s) => ({ ...s, losses: s.losses + 1 }));
-            setActiveTrade(null);
+        // TRAIL
+        if (trade.partial) {
+          if (trade.type === "LONG") {
+            trade.sl = Math.max(trade.sl, latest * 0.995);
+          } else {
+            trade.sl = Math.min(trade.sl, latest * 1.005);
           }
+        }
+
+        // EXIT
+        let result = null;
+
+        if (trade.type === "LONG") {
+          if (latest >= trade.final) result = "win";
+          if (latest <= trade.sl) result = "loss";
+        }
+
+        if (trade.type === "SHORT") {
+          if (latest <= trade.final) result = "win";
+          if (latest >= trade.sl) result = "loss";
+        }
+
+        if (result) {
+          const duration = ((Date.now() - trade.startTime) / 60000).toFixed(1);
+
+          const record = {
+            ...trade,
+            exit: latest,
+            result,
+            duration,
+          };
+
+          const updatedHistory = [record, ...history].slice(0, 20);
+
+          const updatedStats =
+            result === "win"
+              ? { ...stats, wins: stats.wins + 1 }
+              : { ...stats, losses: stats.losses + 1 };
+
+          setStats(updatedStats);
+          setHistory(updatedHistory);
+
+          localStorage.setItem("stats", JSON.stringify(updatedStats));
+          localStorage.setItem("history", JSON.stringify(updatedHistory));
+
+          new Notification(result === "win" ? "🎯 TP Hit" : "❌ SL Hit");
+
+          setActiveTrade(null);
+        } else {
+          setActiveTrade(trade);
         }
       }
     }
 
-    fetchAll();
-    const interval = setInterval(fetchAll, 60000);
+    fetchPrice();
+    const interval = setInterval(fetchPrice, 5000);
     return () => clearInterval(interval);
-  }, [activeTrade]);
+  }, [activeTrade, stats, history]);
 
   const total = stats.wins + stats.losses;
   const winRate = total ? ((stats.wins / total) * 100).toFixed(1) : 0;
 
   return (
-    <div className="space-y-5">
-      {/* 🔥 FINAL SIGNAL */}
-      <div className="bg-[#0b0f17] p-5 rounded-xl border">
-        <h2 className="text-xl font-bold">Smart Signal</h2>
-        <p className="text-gray-400">Price: {price}</p>
-      </div>
+    <div className="space-y-4">
+      <h2>Price: {price}</h2>
+      <p>Confidence: {confidence}%</p>
 
-      {/* 📊 TIMEFRAME SIGNALS */}
-      <div className="grid grid-cols-3 gap-3">
-        {TIMEFRAMES.map((tf) => (
-          <div
-            key={tf}
-            className="bg-[#0b0f17] p-3 rounded-lg border text-center"
-          >
-            <p className="text-xs text-gray-400">{tf.toUpperCase()}</p>
-            <p className="font-bold">{signals[tf] || "..."}</p>
-          </div>
-        ))}
-      </div>
-
-      {/* 🎯 ACTIVE TRADE */}
       {activeTrade && (
-        <div className="bg-green-900/20 p-5 rounded-xl border">
-          <h3 className="font-bold">Active Trade</h3>
+        <div>
           <p>{activeTrade.type}</p>
           <p>Entry: {activeTrade.entry.toFixed(0)}</p>
           <p>SL: {activeTrade.sl.toFixed(0)}</p>
-          <p>Target: {activeTrade.target.toFixed(0)}</p>
+          <p>TP1: {activeTrade.tp1.toFixed(0)}</p>
+          <p>Final: {activeTrade.final.toFixed(0)}</p>
+          <p>
+            Hold: {((Date.now() - activeTrade.startTime) / 60000).toFixed(1)}{" "}
+            min
+          </p>
         </div>
       )}
 
-      {/* 📊 STATS */}
-      <div className="bg-[#0b0f17] p-5 rounded-xl border">
-        <h3 className="font-bold">Performance</h3>
-        <p>Win Rate: {winRate}%</p>
-        <p>Wins: {stats.wins}</p>
-        <p>Losses: {stats.losses}</p>
-      </div>
+      <p>Win Rate: {winRate}%</p>
+
+      <h3>History</h3>
+      {history.map((t, i) => (
+        <div key={i} className="flex justify-between text-sm">
+          <span>{t.type}</span>
+          <span>{t.result === "win" ? "🟢" : "🔴"}</span>
+          <span>
+            {t.entry.toFixed(0)} → {t.exit.toFixed(0)}
+          </span>
+          <span>{t.confidence}%</span>
+          <span>{t.duration}m</span>
+        </div>
+      ))}
     </div>
   );
 }
