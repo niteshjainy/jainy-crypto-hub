@@ -1,7 +1,7 @@
-import { useEffect, useState } from "react";
-import useSyncedCharts from "./components/hooks/useSyncedCharts";
+import { useState } from "react";
 import SmartDashboard from "./components/SmartDashboard";
 import MiniChart from "./components/MiniChart";
+import useSyncedCharts from "./useSyncedCharts";
 
 export default function App() {
   const [charts, setCharts] = useState([]);
