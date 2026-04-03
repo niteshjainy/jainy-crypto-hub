@@ -4,19 +4,18 @@ export default async function handler(req, res) {
     try {
         let { path, ...params } = req.query;
 
-        // 🔥 SAFETY FIX
         if (!path) {
             return res.status(400).json({ error: "Missing path" });
         }
 
-        // ensure path starts with /
         if (!path.startsWith("/")) {
             path = "/" + path;
         }
 
         const query = new URLSearchParams(params).toString();
 
-        const url = `https://open-api-v4.coinglass.com${path}?${query}`;
+        // 🔥 FIXED URL
+        const url = `https://open-api-v4.coinglass.com/api/pro/v1${path}?${query}`;
 
         console.log("URL:", url);
 
