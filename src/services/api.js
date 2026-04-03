@@ -7,7 +7,6 @@ const API = axios.create({
   },
 });
 
-// 🔥 COMMON CONFIG
 const DEFAULT = {
   exchange: "Binance",
   symbol: "BTCUSDT",
@@ -15,41 +14,19 @@ const DEFAULT = {
   limit: 200,
 };
 
-// ✅ PRICE
 export const getPrice = (interval = "4h") =>
   API.get("/futures/price/history", {
-    params: {
-      ...DEFAULT,
-      interval,
-    },
+    params: { ...DEFAULT, interval },
   });
 
-// ✅ OI
 export const getOI = (interval = "4h") =>
   API.get("/futures/open-interest/aggregated-history", {
-    params: {
-      symbol: "BTC",
-      interval,
-    },
+    params: { symbol: "BTC", interval },
   });
 
-// ✅ FUNDING
 export const getFunding = (interval = "4h") =>
   API.get("/futures/funding-rate/history", {
-    params: {
-      ...DEFAULT,
-      interval,
-    },
-  });
-
-// ✅ CVD
-export const getCVD = (interval = "4h") =>
-  API.get("/futures/aggregated-cvd/history", {
-    params: {
-      symbol: "BTC",
-      interval,
-      exchange_list: "Binance,OKX,Bybit",
-    },
+    params: { ...DEFAULT, interval },
   });
 
 export const getLiquidation = (interval = "4h") =>
