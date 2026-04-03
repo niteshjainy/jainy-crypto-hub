@@ -1,7 +1,7 @@
 import axios from "axios";
 
 const API = axios.create({
-  baseURL: "/api",
+  baseURL: "https://open-api.coinglass.com/api/pro/v1",
   headers: {
     "CG-API-KEY": process.env.REACT_APP_COINGLASS_API_KEY,
   },
