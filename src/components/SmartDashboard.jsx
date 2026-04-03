@@ -1,77 +1,67 @@
 import { useEffect, useState } from "react";
-import { getLiquidation, getOI, getFunding } from "../services/api";
+import { getLiquidation, getOI, getFunding, getPrice } from "../services/api";
 
-// 🔊 SOUND
-const alertSound = new Audio("/alert.mp3");
+const TIMEFRAMES = ["4h", "1d", "1w"];
 
-// 🔥 SIGNAL ENGINE (same)
 function calculateSignal(liqData, oiData, frData) {
   const latestLiq = liqData.at(-1);
   const last3OI = oiData.slice(-3);
   const latestFR = frData.at(-1);
 
-  const longLiq = Number(latestLiq.aggregated_long_liquidation_usd);
-  const shortLiq = Number(latestLiq.aggregated_short_liquidation_usd);
+  const longLiq = Number(latestLiq?.aggregated_long_liquidation_usd || 0);
+  const shortLiq = Number(latestLiq?.aggregated_short_liquidation_usd || 0);
 
-  const oiTrendUp = Number(last3OI[2].close) > Number(last3OI[0].close);
+  const oiTrendUp =
+    Number(last3OI?.[2]?.close || 0) > Number(last3OI?.[0]?.close || 0);
 
-  const frValue = Number(latestFR.close || latestFR.funding_rate);
+  const frValue = Number(latestFR?.close || latestFR?.funding_rate || 0);
 
   let score = 0;
-  let reasons = [];
 
-  const liqRatio =
-    shortLiq > longLiq ? shortLiq / (longLiq + 1) : longLiq / (shortLiq + 1);
+  if (shortLiq > longLiq) score += 30;
+  else score -= 30;
 
-  if (shortLiq > longLiq) {
-    score += Math.min(40, liqRatio * 10);
-    reasons.push("Short liquidation dominance");
-  } else {
-    score -= Math.min(40, liqRatio * 10);
-    reasons.push("Long liquidation dominance");
-  }
+  if (oiTrendUp) score += 20;
+  else score -= 15;
 
-  if (oiTrendUp) {
-    score += 20;
-    reasons.push("OI increasing");
-  } else {
-    score -= 15;
-    reasons.push("OI decreasing");
-  }
+  if (frValue < 0) score += 15;
+  else score -= 10;
 
-  if (frValue < 0) {
-    score += 15;
-    reasons.push("Funding negative");
-  } else {
-    score -= 10;
-    reasons.push("Funding positive");
-  }
+  if (score >= 35) return "🚀 BULLISH";
+  if (score <= -35) return "📉 BEARISH";
 
-  let signal = "⚖️ NEUTRAL";
-  if (score >= 35) signal = "🚀 SHORT SQUEEZE";
-  else if (score <= -35) signal = "📉 LONG LIQUIDATION";
-
-  let confidence = Math.abs(score);
-  confidence = Math.min(95, Math.max(55, confidence));
-
-  return {
-    signal,
-    confidence: Math.round(confidence),
-    reasons,
-  };
+  return "⚖️ NEUTRAL";
 }
 
-const TIMEFRAMES = ["4h", "1d", "1w"];
+function getTradeSetup(signal, price) {
+  if (!price) return null;
+
+  if (signal.includes("BULLISH")) {
+    return {
+      entry: price,
+      sl: price * 0.98,
+      target: price * 1.03,
+      type: "LONG",
+    };
+  }
+
+  if (signal.includes("BEARISH")) {
+    return {
+      entry: price,
+      sl: price * 1.02,
+      target: price * 0.97,
+      type: "SHORT",
+    };
+  }
+
+  return null;
+}
 
 export default function SmartDashboard() {
   const [signals, setSignals] = useState({});
-  const [lastAlert, setLastAlert] = useState("");
-
-  useEffect(() => {
-    if ("Notification" in window) {
-      Notification.requestPermission();
-    }
-  }, []);
+  const [price, setPrice] = useState(0);
+  const [activeTrade, setActiveTrade] = useState(null);
+  const [stats, setStats] = useState({ wins: 0, losses: 0 });
 
   useEffect(() => {
     async function fetchAll() {
@@ -85,96 +75,112 @@ export default function SmartDashboard() {
             getFunding(tf),
           ]);
 
-          const liqData = liq?.data?.data || [];
-          const oiData = oi?.data?.data || [];
-          const frData = fr?.data?.data || [];
-
-          if (!liqData.length || !oiData.length || !frData.length) continue;
-
-          results[tf] = calculateSignal(liqData, oiData, frData);
-        } catch (err) {
-          console.error(`Error ${tf}`, err);
-        }
+          results[tf] = calculateSignal(
+            liq?.data?.data || [],
+            oi?.data?.data || [],
+            fr?.data?.data || [],
+          );
+        } catch {}
       }
 
+      const priceRes = await getPrice("4h");
+      const latestPrice = Number(priceRes?.data?.data?.at(-1)?.close) || 0;
+
       setSignals(results);
+      setPrice(latestPrice);
 
-      // 🔥 FINAL BIAS
-      let totalScore = 0;
+      // 🔥 FINAL SIGNAL (multi TF)
+      const values = Object.values(results);
 
-      Object.entries(results).forEach(([tf, s]) => {
-        const weight = tf === "1w" ? 3 : tf === "1d" ? 2 : 1;
+      const bullish = values.filter((s) => s?.includes("BULLISH")).length;
 
-        if (s.signal.includes("SHORT")) {
-          totalScore += weight * s.confidence;
-        } else if (s.signal.includes("LONG")) {
-          totalScore -= weight * s.confidence;
-        }
-      });
+      const bearish = values.filter((s) => s?.includes("BEARISH")).length;
 
       let finalSignal = "⚖️ NEUTRAL";
 
-      if (totalScore > 100) finalSignal = "🚀 STRONG BULLISH";
-      else if (totalScore > 50) finalSignal = "🚀 BULLISH";
-      else if (totalScore < -100) finalSignal = "📉 STRONG BEARISH";
-      else if (totalScore < -50) finalSignal = "📉 BEARISH";
+      if (bullish >= 2) finalSignal = "🚀 BULLISH";
+      else if (bearish >= 2) finalSignal = "📉 BEARISH";
 
-      if (finalSignal !== lastAlert && finalSignal !== "⚖️ NEUTRAL") {
-        if (Notification.permission === "granted") {
-          new Notification(`🚨 ${finalSignal}`, {
-            body: "Multi-timeframe signal detected",
-          });
+      const newTrade = getTradeSetup(finalSignal, latestPrice);
+
+      // ✅ only 1 trade
+      if (!activeTrade && newTrade && finalSignal !== "⚖️ NEUTRAL") {
+        setActiveTrade({
+          ...newTrade,
+          time: new Date().toLocaleTimeString(),
+        });
+      }
+
+      // 🔥 result tracking
+      if (activeTrade) {
+        if (activeTrade.type === "LONG") {
+          if (latestPrice >= activeTrade.target) {
+            setStats((s) => ({ ...s, wins: s.wins + 1 }));
+            setActiveTrade(null);
+          } else if (latestPrice <= activeTrade.sl) {
+            setStats((s) => ({ ...s, losses: s.losses + 1 }));
+            setActiveTrade(null);
+          }
         }
-        alertSound.play().catch(() => {});
-        setLastAlert(finalSignal);
+
+        if (activeTrade.type === "SHORT") {
+          if (latestPrice <= activeTrade.target) {
+            setStats((s) => ({ ...s, wins: s.wins + 1 }));
+            setActiveTrade(null);
+          } else if (latestPrice >= activeTrade.sl) {
+            setStats((s) => ({ ...s, losses: s.losses + 1 }));
+            setActiveTrade(null);
+          }
+        }
       }
     }
 
     fetchAll();
-    const interval = setInterval(fetchAll, 15000);
+    const interval = setInterval(fetchAll, 60000);
     return () => clearInterval(interval);
-  }, [lastAlert]);
+  }, [activeTrade]);
+
+  const total = stats.wins + stats.losses;
+  const winRate = total ? ((stats.wins / total) * 100).toFixed(1) : 0;
 
   return (
     <div className="space-y-5">
-      {/* 🔥 HERO CARD */}
-      <div className="bg-gradient-to-br from-blue-600/20 to-purple-600/20 backdrop-blur-xl p-6 rounded-2xl border border-white/10 shadow-xl hover:scale-[1.02] transition">
-        <h2 className="text-2xl font-bold tracking-wide">
-          ⚡ Smart Money Signal
-        </h2>
-
-        <p className="text-gray-400 text-sm mt-2">
-          Multi-timeframe AI analysis
-        </p>
+      {/* 🔥 FINAL SIGNAL */}
+      <div className="bg-[#0b0f17] p-5 rounded-xl border">
+        <h2 className="text-xl font-bold">Smart Signal</h2>
+        <p className="text-gray-400">Price: {price}</p>
       </div>
 
-      {/* 📊 CARDS */}
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-        {TIMEFRAMES.map((tf) => {
-          const s = signals[tf];
-          if (!s) return null;
+      {/* 📊 TIMEFRAME SIGNALS */}
+      <div className="grid grid-cols-3 gap-3">
+        {TIMEFRAMES.map((tf) => (
+          <div
+            key={tf}
+            className="bg-[#0b0f17] p-3 rounded-lg border text-center"
+          >
+            <p className="text-xs text-gray-400">{tf.toUpperCase()}</p>
+            <p className="font-bold">{signals[tf] || "..."}</p>
+          </div>
+        ))}
+      </div>
 
-          return (
-            <div
-              key={tf}
-              className="bg-white/5 backdrop-blur-lg border border-white/10 rounded-2xl p-4 shadow-md hover:shadow-xl hover:-translate-y-1 transition duration-300"
-            >
-              <p className="text-xs text-gray-400 mb-1">{tf.toUpperCase()}</p>
+      {/* 🎯 ACTIVE TRADE */}
+      {activeTrade && (
+        <div className="bg-green-900/20 p-5 rounded-xl border">
+          <h3 className="font-bold">Active Trade</h3>
+          <p>{activeTrade.type}</p>
+          <p>Entry: {activeTrade.entry.toFixed(0)}</p>
+          <p>SL: {activeTrade.sl.toFixed(0)}</p>
+          <p>Target: {activeTrade.target.toFixed(0)}</p>
+        </div>
+      )}
 
-              <h3 className="text-lg font-semibold mb-1">{s.signal}</h3>
-
-              <p className="text-xs text-gray-400">
-                Confidence: {s.confidence}%
-              </p>
-
-              <div className="mt-2 text-xs text-gray-500 space-y-1">
-                {s.reasons.map((r, i) => (
-                  <p key={i}>• {r}</p>
-                ))}
-              </div>
-            </div>
-          );
-        })}
+      {/* 📊 STATS */}
+      <div className="bg-[#0b0f17] p-5 rounded-xl border">
+        <h3 className="font-bold">Performance</h3>
+        <p>Win Rate: {winRate}%</p>
+        <p>Wins: {stats.wins}</p>
+        <p>Losses: {stats.losses}</p>
       </div>
     </div>
   );
