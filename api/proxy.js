@@ -1,6 +1,4 @@
 export default async function handler(req, res) {
-    console.log("✅ PROXY HIT");
-
     try {
         let { path, ...params } = req.query;
 
@@ -14,10 +12,7 @@ export default async function handler(req, res) {
 
         const query = new URLSearchParams(params).toString();
 
-        // 🔥 FIXED URL
-        const url = `https://open-api-v4.coinglass.com/api/pro/v1${path}?${query}`;
-
-        console.log("URL:", url);
+        const url = `https://open-api.coinglass.com/api/pro/v1${path}?${query}`;
 
         const response = await fetch(url, {
             headers: {
@@ -25,14 +20,10 @@ export default async function handler(req, res) {
             },
         });
 
-        const text = await response.text();
+        const data = await response.text();
 
-        console.log("STATUS:", response.status);
-        console.log("RESPONSE:", text);
-
-        res.status(response.status).send(text);
+        res.status(response.status).send(data);
     } catch (err) {
-        console.error("❌ PROXY ERROR:", err.message);
         res.status(500).json({ error: err.message });
     }
 }

@@ -2,9 +2,6 @@ import axios from "axios";
 
 const API = axios.create({
   baseURL: "/api",
-  // headers: {
-  //   "CG-API-KEY": process.env.REACT_APP_COINGLASS_API_KEY,
-  // },
 });
 
 // 🔥 CACHE STORE
@@ -41,30 +38,27 @@ async function fetchWithCache(key, url, params) {
 // ✅ PRICE
 export const getPrice = (interval = "4h") =>
   fetchWithCache(`price-${interval}`, "/futures/price/history", {
-    exchange: "Binance",
-    symbol: "BTCUSDT",
+    symbol: "BTC", // ✅ FIXED
     interval,
   });
 
 // ✅ OI
 export const getOI = (interval = "4h") =>
-  fetchWithCache(`oi-${interval}`, "/futures/open-interest/aggregated-history", {
+  fetchWithCache(`oi-${interval}`, "/futures/openInterest/history", {
     symbol: "BTC",
     interval,
   });
 
 // ✅ FUNDING
 export const getFunding = (interval = "4h") =>
-  fetchWithCache(`fr-${interval}`, "/futures/funding-rate/history", {
-    exchange: "Binance",
-    symbol: "BTCUSDT",
+  fetchWithCache(`fr-${interval}`, "/futures/fundingRate/history", {
+    symbol: "BTC",
     interval,
   });
 
 // ✅ LIQUIDATION
 export const getLiquidation = (interval = "4h") =>
-  fetchWithCache(`liq-${interval}`, "/futures/liquidation/aggregated-history", {
+  fetchWithCache(`liq-${interval}`, "/futures/liquidation/history", {
     symbol: "BTC",
     interval,
-    exchange_list: "Binance,OKX,Bybit",
   });
