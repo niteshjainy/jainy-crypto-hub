@@ -29,9 +29,9 @@ export default function App() {
       </div>
 
       {/* 📊 OPTIONAL MINI CHART */}
-      {/* <div className="mb-4 bg-[#0b0f17] rounded-xl border border-gray-800 p-2">
+      <div className="mb-4 bg-[#0b0f17] rounded-xl border border-gray-800 p-2">
         <MiniChart onReady={handleChartReady} />
-      </div> */}
+      </div>
 
       {/* 🧠 MAIN DASHBOARD */}
       <div className="mb-6">
