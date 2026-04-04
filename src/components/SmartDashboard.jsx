@@ -69,10 +69,10 @@ function calculateSignal(liq, oi, fr) {
 }
 
 // =========================
-// 💰 TRADE GENERATION + POSITION SIZE
+// 💰 TRADE GENERATION
 // =========================
 function getTrade(score, price, direction, capital) {
-  const riskPercent = 0.02; // 2%
+  const riskPercent = 0.02;
 
   const volatility = price * 0.01;
 
@@ -81,7 +81,7 @@ function getTrade(score, price, direction, capital) {
 
   const risk = Math.abs(price - sl);
 
-  const positionSize = (capital * riskPercent) / risk;
+  const size = (capital * riskPercent) / risk;
 
   const final = direction === "LONG" ? price + risk * 2 : price - risk * 2;
 
@@ -91,7 +91,7 @@ function getTrade(score, price, direction, capital) {
     entry: price,
     sl,
     final,
-    size: positionSize,
+    size,
     risk,
     startTime: Date.now(),
   };
@@ -100,21 +100,37 @@ function getTrade(score, price, direction, capital) {
 export default function SmartDashboard() {
   const [price, setPrice] = useState(0);
   const [activeTrade, setActiveTrade] = useState(null);
-  const [capital, setCapital] = useState(10000); // 🔥 starting capital
+  const [capital, setCapital] = useState(10000);
   const [confidence, setConfidence] = useState(0);
+
+  const [stats, setStats] = useState({
+    wins: 0,
+    losses: 0,
+    totalTrades: 0,
+    pnl: 0,
+    best: 0,
+    worst: 0,
+    streak: 0,
+    maxDrawdown: 0,
+    peakCapital: 10000,
+  });
 
   const tradeRef = useRef(null);
   const pendingTradeRef = useRef(null);
   const lastTradeTimeRef = useRef(0);
 
   useEffect(() => {
-    const saved = localStorage.getItem("capital");
-    if (saved) setCapital(Number(saved));
+    const savedCapital = localStorage.getItem("capital");
+    const savedStats = localStorage.getItem("stats");
+
+    if (savedCapital) setCapital(Number(savedCapital));
+    if (savedStats) setStats(JSON.parse(savedStats));
   }, []);
 
   useEffect(() => {
     localStorage.setItem("capital", capital);
-  }, [capital]);
+    localStorage.setItem("stats", JSON.stringify(stats));
+  }, [capital, stats]);
 
   useEffect(() => {
     let interval;
@@ -193,33 +209,69 @@ export default function SmartDashboard() {
           return;
         }
 
-        // CONFIRM ENTRY
+        // CONFIRM
         if (pendingTradeRef.current && !trade) {
           const p = pendingTradeRef.current;
 
-          if (now - p.time < 20000) return;
+          if (!p.confirmed) {
+            if (now - p.time < 20000) return;
 
-          if (Math.abs(latest - p.price) / p.price > 0.01) {
+            if (Math.abs(latest - p.price) / p.price > 0.01) {
+              pendingTradeRef.current = null;
+              return;
+            }
+
+            const confirm =
+              (p.direction === "LONG" && latest > p.price) ||
+              (p.direction === "SHORT" && latest < p.price);
+
+            if (confirm) {
+              pendingTradeRef.current = {
+                ...p,
+                confirmed: true,
+                confirmPrice: latest,
+              };
+              return;
+            }
+
             pendingTradeRef.current = null;
-            return;
           }
-
-          const confirm =
-            (p.direction === "LONG" && latest > p.price) ||
-            (p.direction === "SHORT" && latest < p.price);
-
-          if (confirm) {
-            const newTrade = getTrade(confidence, latest, p.direction, capital);
-
-            setActiveTrade(newTrade);
-            tradeRef.current = newTrade;
-            lastTradeTimeRef.current = now;
-          }
-
-          pendingTradeRef.current = null;
         }
 
-        // EXIT + CAPITAL UPDATE
+        // PULLBACK ENTRY (PHASE 9)
+        if (pendingTradeRef.current?.confirmed && !trade) {
+          const p = pendingTradeRef.current;
+
+          let entryReady = false;
+
+          if (
+            p.direction === "LONG" &&
+            latest < p.confirmPrice &&
+            (p.confirmPrice - latest) / p.confirmPrice > 0.002
+          )
+            entryReady = true;
+
+          if (
+            p.direction === "SHORT" &&
+            latest > p.confirmPrice &&
+            (latest - p.confirmPrice) / p.confirmPrice > 0.002
+          )
+            entryReady = true;
+
+          if (entryReady) {
+            const newTrade = getTrade(confidence, latest, p.direction, capital);
+
+            if (newTrade) {
+              setActiveTrade(newTrade);
+              tradeRef.current = newTrade;
+              lastTradeTimeRef.current = now;
+            }
+
+            pendingTradeRef.current = null;
+          }
+        }
+
+        // EXIT
         if (trade) {
           let result = null;
 
@@ -239,7 +291,26 @@ export default function SmartDashboard() {
                 ? trade.risk * 2 * trade.size
                 : -trade.risk * trade.size;
 
-            setCapital((prev) => prev + pnl);
+            const newCapital = capital + pnl;
+
+            setCapital(newCapital);
+
+            setStats((prev) => {
+              const peak = Math.max(prev.peakCapital, newCapital);
+              const dd = ((peak - newCapital) / peak) * 100;
+
+              return {
+                wins: result === "win" ? prev.wins + 1 : prev.wins,
+                losses: result === "loss" ? prev.losses + 1 : prev.losses,
+                totalTrades: prev.totalTrades + 1,
+                pnl: prev.pnl + pnl,
+                best: Math.max(prev.best, pnl),
+                worst: Math.min(prev.worst, pnl),
+                streak: result === "loss" ? prev.streak + 1 : 0,
+                maxDrawdown: Math.max(prev.maxDrawdown, dd),
+                peakCapital: peak,
+              };
+            });
 
             setActiveTrade(null);
             tradeRef.current = null;
@@ -261,6 +332,20 @@ export default function SmartDashboard() {
       <h2>Price: {price}</h2>
       <p>Confidence: {confidence}%</p>
       <p>Capital: ₹{capital.toFixed(2)}</p>
+
+      <p>Trades: {stats.totalTrades}</p>
+      <p>
+        Win Rate:{" "}
+        {stats.totalTrades
+          ? ((stats.wins / stats.totalTrades) * 100).toFixed(1)
+          : 0}
+        %
+      </p>
+      <p>PnL: ₹{stats.pnl.toFixed(2)}</p>
+      <p>Best: ₹{stats.best.toFixed(2)}</p>
+      <p>Worst: ₹{stats.worst.toFixed(2)}</p>
+      <p>Max DD: {stats.maxDrawdown.toFixed(2)}%</p>
+
       <p>Active Trade: {activeTrade?.type || "None"}</p>
     </div>
   );
