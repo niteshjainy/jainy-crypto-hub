@@ -1,7 +1,6 @@
 import { useEffect, useState, useRef } from "react";
 import { getLiquidation, getOI, getFunding, getPrice } from "../services/api";
 
-
 // ================= SIGNAL =================
 function calculateSignal(liq, oi, fr) {
   const latest = liq.at(-1);
@@ -58,10 +57,9 @@ function buildTrade(price, direction, capital, rr) {
   };
 }
 
-// ================= COMPONENT =================
 export default function SmartDashboard() {
   const [systems, setSystems] = useState(() => {
-    const saved = localStorage.getItem("systems_final");
+    const saved = localStorage.getItem("systems_final_v2");
     return (
       JSON.parse(saved) || {
         LONG_STRICT: { capital: 1000, history: [], trade: null },
@@ -72,11 +70,19 @@ export default function SmartDashboard() {
     );
   });
 
+  const [openHistory, setOpenHistory] = useState({});
+
   const systemsRef = useRef(systems);
 
+  // ================= LOAD =================
+  useEffect(() => {
+    Notification.requestPermission();
+  }, []);
+
+  // ================= SAVE =================
   useEffect(() => {
     systemsRef.current = systems;
-    localStorage.setItem("systems_final", JSON.stringify(systems));
+    localStorage.setItem("systems_final_v2", JSON.stringify(systems));
   }, [systems]);
 
   useEffect(() => {
@@ -123,6 +129,11 @@ export default function SmartDashboard() {
             if (!trade) return;
 
             sys.trade = trade;
+
+            // 🔔 ENTRY NOTIFICATION
+            new Notification(`${key} ENTRY ${direction}`, {
+              body: `Entry: ${price.toFixed(0)} | RR: ${rr}`,
+            });
           }
 
           // EXIT
@@ -153,6 +164,11 @@ export default function SmartDashboard() {
               date: new Date().toLocaleString(),
             });
 
+            // 🔔 EXIT NOTIFICATION
+            new Notification(`${key} ${result.toUpperCase()}`, {
+              body: `PnL: ${pnl.toFixed(2)}`,
+            });
+
             sys.trade = null;
           }
         });
@@ -181,11 +197,9 @@ export default function SmartDashboard() {
   const getStats = (history) => {
     const wins = history.filter((t) => t.result === "win").length;
     const total = history.length;
-    const losses = total - wins;
-
     return {
       wins,
-      losses,
+      losses: total - wins,
       total,
       rate: total ? ((wins / total) * 100).toFixed(1) : 0,
     };
@@ -203,12 +217,22 @@ export default function SmartDashboard() {
 
             {/* ACTIVE TRADE */}
             {sys.trade ? (
-              <div className="bg-green-700 p-2 mt-2">
-                <p>Type: {sys.trade.type}</p>
-                <p>Entry: {sys.trade.entry.toFixed(0)}</p>
-                <p>SL: {sys.trade.sl.toFixed(0)}</p>
-                <p>TP: {sys.trade.final.toFixed(0)}</p>
-                <p>RR: {sys.trade.rr}</p>
+              <div className="bg-green-700 p-2 mt-2 text-sm">
+                <p>
+                  <b>Type:</b> {sys.trade.type}
+                </p>
+                <p>
+                  <b>Entry:</b> {sys.trade.entry.toFixed(0)}
+                </p>
+                <p className="text-red-300">
+                  <b>SL:</b> {sys.trade.sl.toFixed(0)}
+                </p>
+                <p className="text-green-300">
+                  <b>TP:</b> {sys.trade.final.toFixed(0)}
+                </p>
+                <p>
+                  <b>RR:</b> {sys.trade.rr}
+                </p>
               </div>
             ) : (
               <p>No Trade</p>
@@ -223,28 +247,45 @@ export default function SmartDashboard() {
               <p>Win Rate: {stats.rate}%</p>
             </div>
 
-            {/* HISTORY */}
-            <div className="mt-3">
-              {sys.history.slice(0, 5).map((t) => (
+            {/* HISTORY HEADER */}
+            <button
+              className="mt-2 text-blue-400"
+              onClick={() =>
+                setOpenHistory((prev) => ({
+                  ...prev,
+                  [key]: !prev[key],
+                }))
+              }
+            >
+              {openHistory[key] ? "Hide History ▲" : "Show History ▼"}
+            </button>
+
+            {/* HISTORY LIST */}
+            {openHistory[key] &&
+              sys.history.map((t) => (
                 <div
                   key={t.id}
-                  className={`p-2 my-1 ${
+                  className={`p-2 my-2 text-sm ${
                     t.result === "win" ? "bg-green-600" : "bg-red-600"
                   }`}
                 >
                   <p>
                     {t.type} | {t.result}
                   </p>
+                  <p>Entry: {t.entry.toFixed(0)}</p>
+                  <p>Exit: {t.exit.toFixed(0)}</p>
+                  <p className="text-red-200">SL: {t.sl.toFixed(0)}</p>
+                  <p className="text-green-200">TP: {t.final.toFixed(0)}</p>
                   <p>PnL: ${t.pnl.toFixed(2)}</p>
+
                   <button
                     onClick={() => deleteTrade(t.id, key)}
-                    className="text-xs"
+                    className="text-xs mt-1"
                   >
-                    ❌
+                    ❌ Delete
                   </button>
                 </div>
               ))}
-            </div>
           </div>
         );
       })}
