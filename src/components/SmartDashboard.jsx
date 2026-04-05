@@ -1,37 +1,9 @@
 import { useEffect, useState, useRef } from "react";
 import { getLiquidation, getOI, getFunding, getPrice } from "../services/api";
 
-const TIMEFRAMES = ["4h", "1d", "1w"];
+const TIMEFRAMES = ["4h"];
 
-// =========================
-// 🧠 MARKET REGIME
-// =========================
-function detectMarketRegime(oi, priceData, fr) {
-  const last3OI = oi.slice(-3);
-  const last3Price = priceData.slice(-3);
-  const last3FR = fr.slice(-3);
-
-  if (!last3OI.length || !last3Price.length || !last3FR.length)
-    return "NEUTRAL";
-
-  const oiMove = (last3OI[2]?.close - last3OI[0]?.close) / last3OI[0]?.close;
-
-  const priceMove =
-    Math.abs(last3Price[2]?.close - last3Price[0]?.close) /
-    last3Price[0]?.close;
-
-  const frValues = last3FR.map((f) => Number(f?.close || 0));
-  const frFlat = Math.max(...frValues) - Math.min(...frValues) < 0.002;
-
-  if (oiMove > 0.01 && priceMove > 0.005) return "TRENDING";
-  if (frFlat && priceMove < 0.003) return "RANGING";
-
-  return "NEUTRAL";
-}
-
-// =========================
-// 🔥 SIGNAL ENGINE
-// =========================
+// ================= SIGNAL =================
 function calculateSignal(liq, oi, fr) {
   const latest = liq.at(-1);
   const prev = liq.at(-2) || {};
@@ -49,8 +21,6 @@ function calculateSignal(liq, oi, fr) {
   const longSweep = longLiq > prevLong * 2 && longLiq > 500000;
   const shortSweep = shortLiq > prevShort * 2 && shortLiq > 500000;
 
-  if (Math.abs(frValue) < 0.002) return { score: 50, label: "NO TRADE" };
-
   if (longSweep) score += 25;
   if (shortSweep) score -= 25;
 
@@ -60,25 +30,15 @@ function calculateSignal(liq, oi, fr) {
   if (frValue < 0) score += 10;
   else score -= 10;
 
-  let label = "NEUTRAL";
-
-  if (longSweep) label = "SWEEP LONG";
-  else if (shortSweep) label = "SWEEP SHORT";
-  else if (score >= 65) label = "BULLISH";
-  else if (score <= 35) label = "BEARISH";
-
-  return { score, label };
+  return { score, longSweep, shortSweep };
 }
 
-// =========================
-// 💰 TRADE GENERATION
-// =========================
-function getTrade(price, direction, capital, rr = 2) {
+// ================= TRADE =================
+function buildTrade(price, direction, capital, rr) {
   const riskPercent = 0.02;
-  const volatility = price * 0.01;
+  const vol = price * 0.01;
 
-  const sl =
-    direction === "LONG" ? price - volatility * 1.2 : price + volatility * 1.2;
+  const sl = direction === "LONG" ? price - vol * 1.2 : price + vol * 1.2;
 
   const risk = Math.abs(price - sl);
   if (!risk) return null;
@@ -96,200 +56,109 @@ function getTrade(price, direction, capital, rr = 2) {
     size,
     risk,
     rr,
-    startTime: Date.now(),
   };
 }
 
+// ================= COMPONENT =================
 export default function SmartDashboard() {
-  const [longCapital, setLongCapital] = useState(1000);
-  const [shortCapital, setShortCapital] = useState(1000);
+  const [systems, setSystems] = useState(() => {
+    const saved = localStorage.getItem("systems_final");
+    return (
+      JSON.parse(saved) || {
+        LONG_STRICT: { capital: 1000, history: [], trade: null },
+        SHORT_STRICT: { capital: 1000, history: [], trade: null },
+        LONG_LOOSE: { capital: 1000, history: [], trade: null },
+        SHORT_LOOSE: { capital: 1000, history: [], trade: null },
+      }
+    );
+  });
 
-  const [longHistory, setLongHistory] = useState([]);
-  const [shortHistory, setShortHistory] = useState([]);
-
-  const longTradeRef = useRef(null);
-  const shortTradeRef = useRef(null);
-  const pendingRef = useRef(null);
-
-  // ✅ FIX: refs for lint-safe capital usage
-  const longCapitalRef = useRef(longCapital);
-  const shortCapitalRef = useRef(shortCapital);
+  const systemsRef = useRef(systems);
 
   useEffect(() => {
-    longCapitalRef.current = longCapital;
-    shortCapitalRef.current = shortCapital;
-  }, [longCapital, shortCapital]);
-
-  // LOAD
-  useEffect(() => {
-    const lc = localStorage.getItem("longCapital");
-    const sc = localStorage.getItem("shortCapital");
-    const lh = localStorage.getItem("longHistory");
-    const sh = localStorage.getItem("shortHistory");
-
-    if (lc) setLongCapital(Number(lc));
-    if (sc) setShortCapital(Number(sc));
-    if (lh) setLongHistory(JSON.parse(lh));
-    if (sh) setShortHistory(JSON.parse(sh));
-
-    Notification.requestPermission();
-  }, []);
-
-  // SAVE
-  useEffect(() => {
-    localStorage.setItem("longCapital", longCapital);
-    localStorage.setItem("shortCapital", shortCapital);
-    localStorage.setItem("longHistory", JSON.stringify(longHistory));
-    localStorage.setItem("shortHistory", JSON.stringify(shortHistory));
-  }, [longCapital, shortCapital, longHistory, shortHistory]);
+    systemsRef.current = systems;
+    localStorage.setItem("systems_final", JSON.stringify(systems));
+  }, [systems]);
 
   useEffect(() => {
     let interval;
 
     const run = async () => {
       try {
-        const res = {};
-        let baseOI = [],
-          baseFR = [];
+        const [liq, oi, fr] = await Promise.all([
+          getLiquidation("4h"),
+          getOI("4h"),
+          getFunding("4h"),
+        ]);
 
-        for (let tf of TIMEFRAMES) {
-          const [liq, oi, fr] = await Promise.all([
-            getLiquidation(tf),
-            getOI(tf),
-            getFunding(tf),
-          ]);
-
-          res[tf] = calculateSignal(
-            liq?.data?.data || [],
-            oi?.data?.data || [],
-            fr?.data?.data || [],
-          );
-
-          if (tf === "4h") {
-            baseOI = oi?.data?.data || [];
-            baseFR = fr?.data?.data || [];
-          }
-        }
+        const signal = calculateSignal(
+          liq?.data?.data || [],
+          oi?.data?.data || [],
+          fr?.data?.data || [],
+        );
 
         const priceRes = await getPrice("4h");
-        const priceData = priceRes?.data?.data || [];
-        if (!priceData.length) return;
+        const price = Number(priceRes?.data?.data?.at(-1)?.close);
+        if (!price) return;
 
-        const latest = Number(priceData.at(-1)?.close);
-        if (!latest) return;
+        const newSystems = { ...systemsRef.current };
 
-        const regime = detectMarketRegime(baseOI, priceData, baseFR);
+        Object.entries(newSystems).forEach(([key, sys]) => {
+          // ENTRY
+          if (!sys.trade) {
+            let direction = null;
 
-        const h4 = res["4h"];
-        const sweep = h4.label.includes("SWEEP");
+            if (key === "LONG_STRICT" && signal.score >= 60) direction = "LONG";
+            if (key === "SHORT_STRICT" && signal.score <= 40)
+              direction = "SHORT";
 
-        const direction = sweep
-          ? h4.label.includes("LONG")
-            ? "LONG"
-            : "SHORT"
-          : h4.score >= 60
-            ? "LONG"
-            : "SHORT";
+            if (key === "LONG_LOOSE" && signal.score >= 55) direction = "LONG";
+            if (key === "SHORT_LOOSE" && signal.score <= 45)
+              direction = "SHORT";
 
-        // ENTRY FIXED
-        if (
-          !pendingRef.current &&
-          !longTradeRef.current &&
-          !shortTradeRef.current &&
-          regime !== "RANGING"
-        ) {
-          pendingRef.current = {
-            direction,
-            price: latest,
-            time: Date.now(),
-          };
-          return;
-        }
+            if (!direction) return;
 
-        // CONFIRM
-        if (pendingRef.current) {
-          const p = pendingRef.current;
+            const rr = key.includes("STRICT") ? 2 : 1.2;
 
-          if (Date.now() - p.time < 15000) return;
+            const trade = buildTrade(price, direction, sys.capital, rr);
+            if (!trade) return;
 
-          const confirm =
-            (p.direction === "LONG" && latest > p.price) ||
-            (p.direction === "SHORT" && latest < p.price);
-
-          if (!confirm) {
-            pendingRef.current = null;
-            return;
+            sys.trade = trade;
           }
 
-          const rr = p.direction === "LONG" ? 2 : 1.2;
+          // EXIT
+          const t = sys.trade;
+          if (!t) return;
 
-          const trade = getTrade(
-            latest,
-            p.direction,
-            p.direction === "LONG"
-              ? longCapitalRef.current
-              : shortCapitalRef.current,
-            rr,
-          );
-
-          if (!trade) return;
-
-          if (p.direction === "LONG") {
-            longTradeRef.current = trade;
-            new Notification("🚀 LONG ENTRY");
-          } else {
-            shortTradeRef.current = trade;
-            new Notification("🔴 SHORT ENTRY");
-          }
-
-          pendingRef.current = null;
-        }
-
-        // EXIT
-        const handleExit = (trade, setCap, setHistory) => {
           let result = null;
 
-          if (trade.type === "LONG") {
-            if (latest >= trade.final) result = "win";
-            if (latest <= trade.sl) result = "loss";
+          if (t.type === "LONG") {
+            if (price >= t.final) result = "win";
+            if (price <= t.sl) result = "loss";
           } else {
-            if (latest <= trade.final) result = "win";
-            if (latest >= trade.sl) result = "loss";
+            if (price <= t.final) result = "win";
+            if (price >= t.sl) result = "loss";
           }
 
           if (result) {
             const pnl =
-              result === "win"
-                ? trade.risk * trade.size * trade.rr
-                : -trade.risk * trade.size;
+              result === "win" ? t.risk * t.size * t.rr : -t.risk * t.size;
 
-            setCap((prev) => prev + pnl);
+            sys.capital += pnl;
 
-            setHistory((prev) => [
-              {
-                ...trade,
-                exit: latest,
-                pnl,
-                result,
-                date: new Date().toLocaleString(),
-              },
-              ...prev,
-            ]);
+            sys.history.unshift({
+              ...t,
+              exit: price,
+              pnl,
+              result,
+              date: new Date().toLocaleString(),
+            });
 
-            new Notification(result === "win" ? "🎯 TP" : "❌ SL");
-            return null;
+            sys.trade = null;
           }
+        });
 
-          return trade;
-        };
-
-        longTradeRef.current = longTradeRef.current
-          ? handleExit(longTradeRef.current, setLongCapital, setLongHistory)
-          : null;
-
-        shortTradeRef.current = shortTradeRef.current
-          ? handleExit(shortTradeRef.current, setShortCapital, setShortHistory)
-          : null;
+        setSystems(newSystems);
       } catch (e) {
         console.log(e);
       }
@@ -297,55 +166,89 @@ export default function SmartDashboard() {
 
     run();
     interval = setInterval(run, 10000);
-
     return () => clearInterval(interval);
   }, []);
 
-  const deleteTrade = (id, type) => {
-    if (type === "LONG") {
-      setLongHistory((prev) => prev.filter((t) => t.id !== id));
-    } else {
-      setShortHistory((prev) => prev.filter((t) => t.id !== id));
-    }
+  // ================= DELETE =================
+  const deleteTrade = (id, key) => {
+    setSystems((prev) => {
+      const copy = { ...prev };
+      copy[key].history = copy[key].history.filter((t) => t.id !== id);
+      return copy;
+    });
+  };
+
+  // ================= STATS =================
+  const getStats = (history) => {
+    const wins = history.filter((t) => t.result === "win").length;
+    const total = history.length;
+    const losses = total - wins;
+
+    return {
+      wins,
+      losses,
+      total,
+      rate: total ? ((wins / total) * 100).toFixed(1) : 0,
+    };
   };
 
   return (
-    <div className="grid grid-cols-2 gap-4">
-      <div className="bg-green-900/20 p-3">
-        <h2>LONG SYSTEM</h2>
-        <p>Capital: ${longCapital.toFixed(2)}</p>
-        <button onClick={() => setLongHistory([])}>Clear All</button>
+    <div className="grid grid-cols-2 gap-4 p-4">
+      {Object.entries(systems).map(([key, sys]) => {
+        const stats = getStats(sys.history);
 
-        {longHistory.map((t) => (
-          <div key={t.id} className="bg-black/20 p-2 my-2">
-            <p>
-              {t.type} | {t.result}
-            </p>
-            <p>Entry: {t.entry.toFixed(0)}</p>
-            <p>Exit: {t.exit.toFixed(0)}</p>
-            <p>PnL: ${t.pnl.toFixed(2)}</p>
-            <button onClick={() => deleteTrade(t.id, "LONG")}>❌</button>
+        return (
+          <div key={key} className="p-3 bg-black/30 rounded">
+            <h2>{key}</h2>
+            <p>Capital: ${sys.capital.toFixed(2)}</p>
+
+            {/* ACTIVE TRADE */}
+            {sys.trade ? (
+              <div className="bg-green-700 p-2 mt-2">
+                <p>Type: {sys.trade.type}</p>
+                <p>Entry: {sys.trade.entry.toFixed(0)}</p>
+                <p>SL: {sys.trade.sl.toFixed(0)}</p>
+                <p>TP: {sys.trade.final.toFixed(0)}</p>
+                <p>RR: {sys.trade.rr}</p>
+              </div>
+            ) : (
+              <p>No Trade</p>
+            )}
+
+            {/* STATS */}
+            <div className="mt-2 text-sm">
+              <p>Trades: {stats.total}</p>
+              <p>
+                Win: {stats.wins} | Loss: {stats.losses}
+              </p>
+              <p>Win Rate: {stats.rate}%</p>
+            </div>
+
+            {/* HISTORY */}
+            <div className="mt-3">
+              {sys.history.slice(0, 5).map((t) => (
+                <div
+                  key={t.id}
+                  className={`p-2 my-1 ${
+                    t.result === "win" ? "bg-green-600" : "bg-red-600"
+                  }`}
+                >
+                  <p>
+                    {t.type} | {t.result}
+                  </p>
+                  <p>PnL: ${t.pnl.toFixed(2)}</p>
+                  <button
+                    onClick={() => deleteTrade(t.id, key)}
+                    className="text-xs"
+                  >
+                    ❌
+                  </button>
+                </div>
+              ))}
+            </div>
           </div>
-        ))}
-      </div>
-
-      <div className="bg-red-900/20 p-3">
-        <h2>SHORT SYSTEM</h2>
-        <p>Capital: ${shortCapital.toFixed(2)}</p>
-        <button onClick={() => setShortHistory([])}>Clear All</button>
-
-        {shortHistory.map((t) => (
-          <div key={t.id} className="bg-black/20 p-2 my-2">
-            <p>
-              {t.type} | {t.result}
-            </p>
-            <p>Entry: {t.entry.toFixed(0)}</p>
-            <p>Exit: {t.exit.toFixed(0)}</p>
-            <p>PnL: ${t.pnl.toFixed(2)}</p>
-            <button onClick={() => deleteTrade(t.id, "SHORT")}>❌</button>
-          </div>
-        ))}
-      </div>
+        );
+      })}
     </div>
   );
 }
