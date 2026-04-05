@@ -1,7 +1,6 @@
 import { useEffect, useState, useRef } from "react";
 import { getLiquidation, getOI, getFunding, getPrice } from "../services/api";
 
-const TIMEFRAMES = ["4h"];
 
 // ================= SIGNAL =================
 function calculateSignal(liq, oi, fr) {
