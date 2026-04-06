@@ -1,7 +1,8 @@
 import { useCallback, useState } from "react";
-import SmartDashboard from "./components/SmartDashboard";
-import MiniChart from "./components/MiniChart";
 import useSyncedCharts from "./useSyncedCharts";
+import SmartDashboard from "./SmartDashboard";
+import MiniChart from "./MiniChart";
+// import "./backtest";
 
 export default function App() {
   const [charts, setCharts] = useState([]);

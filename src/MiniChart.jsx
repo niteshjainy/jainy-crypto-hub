@@ -1,6 +1,6 @@
 import { useEffect, useRef } from "react";
 import { createChart, CandlestickSeries } from "lightweight-charts";
-import { getPrice } from "../services/api";
+import { getPrice } from "./services/api";
 
 export default function MiniChart({ onReady }) {
   const chartRef = useRef();
