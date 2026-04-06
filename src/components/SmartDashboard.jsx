@@ -1,7 +1,9 @@
-import { useEffect, useState, useRef } from "react";
+import { useEffect, useState, useRef, useCallback } from "react";
 import { getLiquidation, getOI, getFunding, getPrice } from "../services/api";
 
 const API = "https://jainy-crypto-backend.onrender.com";
+
+const alertSound = new Audio("/alert.mp3");
 
 // ================= SIGNAL =================
 function calculateSignal(liq, oi, fr) {
@@ -84,37 +86,44 @@ export default function SmartDashboard() {
       });
   }, []);
 
-  // ===== SAVE FUNCTION =====
-  const saveState = async (newSystems) => {
-    const newVersion = version + 1;
+  // ===== SAVE =====
+  const saveState = useCallback(
+    async (newSystems) => {
+      const newVersion = version + 1;
 
-    try {
-      const res = await fetch(`${API}/save-state`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ systems: newSystems, version: newVersion }),
-      });
+      try {
+        const res = await fetch(`${API}/save-state`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            systems: newSystems,
+            version: newVersion,
+          }),
+        });
 
-      const data = await res.json();
+        const data = await res.json();
 
-      if (!data.success && data.latest) {
-        setSystems(data.latest.systems);
-        setVersion(data.latest.version);
-        return;
+        if (!data.success && data.latest) {
+          setSystems(data.latest.systems);
+          setVersion(data.latest.version);
+          return;
+        }
+
+        setVersion(newVersion);
+      } catch (e) {
+        console.log("Save error", e);
       }
+    },
+    [version],
+  );
 
-      setVersion(newVersion);
-    } catch (e) {
-      console.log("Save error", e);
-    }
-  };
-
-  // ===== KEEP REF UPDATED =====
   useEffect(() => {
     systemsRef.current = systems;
   }, [systems]);
 
-  // ===== MAIN ENGINE =====
+  // ===== ENGINE =====
   useEffect(() => {
     const run = async () => {
       try {
@@ -141,10 +150,9 @@ export default function SmartDashboard() {
         if (!price) return;
 
         const newSystems = { ...systemsRef.current };
-
         let changed = false;
 
-        // ===== ENTRY =====
+        // ENTRY
         Object.entries(newSystems).forEach(([key, sys]) => {
           if (sys.trade) return;
 
@@ -159,17 +167,20 @@ export default function SmartDashboard() {
 
           const rr = key.includes("STRICT") ? 2 : 1.2;
           const trade = buildTrade(price, direction, sys.capital, rr);
-          if (!trade) return;
 
           sys.trade = trade;
           changed = true;
 
+          alertSound.play();
+
           if (Notification.permission === "granted") {
-            new Notification(`${key} ENTRY ${direction}`);
+            new Notification(`🚀 ${key} ENTRY`, {
+              body: `${direction} @ ${price}`,
+            });
           }
         });
 
-        // ===== EXIT =====
+        // EXIT
         Object.entries(newSystems).forEach(([key, sys]) => {
           const t = sys.trade;
           if (!t) return;
@@ -203,8 +214,12 @@ export default function SmartDashboard() {
           sys.trade = null;
           changed = true;
 
+          alertSound.play();
+
           if (Notification.permission === "granted") {
-            new Notification(`${key} ${result.toUpperCase()}`);
+            new Notification(`🎯 ${key} ${result}`, {
+              body: `PnL ${pnl.toFixed(2)}`,
+            });
           }
         });
 
@@ -219,7 +234,16 @@ export default function SmartDashboard() {
 
     const interval = setInterval(run, 10000);
     return () => clearInterval(interval);
-  }, []);
+  }, [saveState]);
+
+  // ===== DELETE =====
+  const deleteTrade = (id, key) => {
+    setSystems((prev) => {
+      const copy = { ...prev };
+      copy[key].history = copy[key].history.filter((t) => t.id !== id);
+      return copy;
+    });
+  };
 
   // ===== UI =====
   return (
@@ -235,13 +259,13 @@ export default function SmartDashboard() {
 
       <div className="grid grid-cols-2 gap-4">
         {Object.entries(systems).map(([key, sys]) => (
-          <div key={key} className="p-3 bg-black/30 rounded">
+          <div key={key} className="p-3 bg-black/30 rounded relative">
             <h2>{key}</h2>
             <p>Capital: ${sys.capital.toFixed(2)}</p>
 
             {sys.trade ? (
               <div className="bg-green-700 p-2 mt-2 text-sm">
-                <p>Type: {sys.trade.type}</p>
+                <p>{sys.trade.type}</p>
                 <p>Entry: {sys.trade.entry.toFixed(0)}</p>
                 <p className="text-red-300">SL: {sys.trade.sl.toFixed(0)}</p>
                 <p className="text-green-300">
@@ -251,6 +275,45 @@ export default function SmartDashboard() {
             ) : (
               <p>No Trade</p>
             )}
+
+            <button
+              className="mt-2 text-blue-400"
+              onClick={() =>
+                setOpenHistory((prev) => ({
+                  ...prev,
+                  [key]: !prev[key],
+                }))
+              }
+            >
+              {openHistory[key]
+                ? "Hide History ▲"
+                : `Show History (${sys.history.length}) ▼`}
+            </button>
+
+            {openHistory[key] &&
+              sys.history.map((t) => (
+                <div
+                  key={t.id}
+                  className={`p-2 my-2 ${
+                    t.result === "win" ? "bg-green-600" : "bg-red-600"
+                  } relative`}
+                >
+                  <button
+                    onClick={() => deleteTrade(t.id, key)}
+                    className="absolute top-1 right-1 text-red-300"
+                  >
+                    ✖
+                  </button>
+
+                  <p>
+                    {t.type} | {t.result}
+                  </p>
+                  <p>Entry: {t.entry}</p>
+                  <p>Exit: {t.exit}</p>
+                  <p>PnL: {t.pnl.toFixed(2)}</p>
+                  <p>⏱ {t.duration}s</p>
+                </div>
+              ))}
           </div>
         ))}
       </div>
