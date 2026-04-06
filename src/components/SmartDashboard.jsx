@@ -1,6 +1,8 @@
 import { useEffect, useState, useRef } from "react";
 import { getLiquidation, getOI, getFunding, getPrice } from "../services/api";
 
+const API = "https://jainy-crypto-backend.onrender.com";
+
 // ================= SIGNAL =================
 function calculateSignal(liq, oi, fr) {
   const latest = liq.at(-1);
@@ -16,11 +18,8 @@ function calculateSignal(liq, oi, fr) {
 
   let score = 50;
 
-  const longSweep = longLiq > prevLong * 2 && longLiq > 500000;
-  const shortSweep = shortLiq > prevShort * 2 && shortLiq > 500000;
-
-  if (longSweep) score += 25;
-  if (shortSweep) score -= 25;
+  if (longLiq > prevLong * 2) score += 25;
+  if (shortLiq > prevShort * 2) score -= 25;
 
   if (shortLiq > longLiq) score += 15;
   else score -= 15;
@@ -28,7 +27,7 @@ function calculateSignal(liq, oi, fr) {
   if (frValue < 0) score += 10;
   else score -= 10;
 
-  return { score, longSweep, shortSweep };
+  return { score };
 }
 
 // ================= TRADE =================
@@ -37,7 +36,6 @@ function buildTrade(price, direction, capital, rr) {
   const vol = price * 0.01;
 
   const sl = direction === "LONG" ? price - vol * 1.2 : price + vol * 1.2;
-
   const risk = Math.abs(price - sl);
   if (!risk) return null;
 
@@ -54,40 +52,70 @@ function buildTrade(price, direction, capital, rr) {
     size,
     risk,
     rr,
+    startTime: Date.now(),
   };
 }
 
 export default function SmartDashboard() {
-  const [systems, setSystems] = useState(() => {
-    const saved = localStorage.getItem("systems_final_v2");
-    return (
-      JSON.parse(saved) || {
-        LONG_STRICT: { capital: 1000, history: [], trade: null },
-        SHORT_STRICT: { capital: 1000, history: [], trade: null },
-        LONG_LOOSE: { capital: 1000, history: [], trade: null },
-        SHORT_LOOSE: { capital: 1000, history: [], trade: null },
-      }
-    );
-  });
+  const defaultSystems = {
+    LONG_STRICT: { capital: 1000, history: [], trade: null },
+    SHORT_STRICT: { capital: 1000, history: [], trade: null },
+    LONG_LOOSE: { capital: 1000, history: [], trade: null },
+    SHORT_LOOSE: { capital: 1000, history: [], trade: null },
+  };
 
+  const [systems, setSystems] = useState(defaultSystems);
+  const [version, setVersion] = useState(0);
   const [openHistory, setOpenHistory] = useState({});
+  const [tfData, setTfData] = useState({});
+  const systemsRef = useRef(defaultSystems);
 
-  const systemsRef = useRef(systems);
-
-  // ================= LOAD =================
+  // ===== LOAD =====
   useEffect(() => {
     Notification.requestPermission();
+
+    fetch(`${API}/get-state`)
+      .then((res) => res.json())
+      .then((data) => {
+        if (data?.systems) {
+          setSystems(data.systems);
+          setVersion(data.version || 0);
+        }
+      });
   }, []);
 
-  // ================= SAVE =================
+  // ===== SAVE FUNCTION =====
+  const saveState = async (newSystems) => {
+    const newVersion = version + 1;
+
+    try {
+      const res = await fetch(`${API}/save-state`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ systems: newSystems, version: newVersion }),
+      });
+
+      const data = await res.json();
+
+      if (!data.success && data.latest) {
+        setSystems(data.latest.systems);
+        setVersion(data.latest.version);
+        return;
+      }
+
+      setVersion(newVersion);
+    } catch (e) {
+      console.log("Save error", e);
+    }
+  };
+
+  // ===== KEEP REF UPDATED =====
   useEffect(() => {
     systemsRef.current = systems;
-    localStorage.setItem("systems_final_v2", JSON.stringify(systems));
   }, [systems]);
 
+  // ===== MAIN ENGINE =====
   useEffect(() => {
-    let interval;
-
     const run = async () => {
       try {
         const [liq, oi, fr] = await Promise.all([
@@ -102,41 +130,47 @@ export default function SmartDashboard() {
           fr?.data?.data || [],
         );
 
+        setTfData({
+          "4H": signal.score > 50 ? "Bullish" : "Bearish",
+          "1D": signal.score > 55 ? "Bullish" : "Bearish",
+          "1W": signal.score > 60 ? "Bullish" : "Bearish",
+        });
+
         const priceRes = await getPrice("4h");
         const price = Number(priceRes?.data?.data?.at(-1)?.close);
         if (!price) return;
 
         const newSystems = { ...systemsRef.current };
 
+        let changed = false;
+
+        // ===== ENTRY =====
         Object.entries(newSystems).forEach(([key, sys]) => {
-          // ENTRY
-          if (!sys.trade) {
-            let direction = null;
+          if (sys.trade) return;
 
-            if (key === "LONG_STRICT" && signal.score >= 60) direction = "LONG";
-            if (key === "SHORT_STRICT" && signal.score <= 40)
-              direction = "SHORT";
+          let direction = null;
 
-            if (key === "LONG_LOOSE" && signal.score >= 55) direction = "LONG";
-            if (key === "SHORT_LOOSE" && signal.score <= 45)
-              direction = "SHORT";
+          if (key === "LONG_STRICT" && signal.score >= 60) direction = "LONG";
+          if (key === "SHORT_STRICT" && signal.score <= 40) direction = "SHORT";
+          if (key === "LONG_LOOSE" && signal.score >= 55) direction = "LONG";
+          if (key === "SHORT_LOOSE" && signal.score <= 45) direction = "SHORT";
 
-            if (!direction) return;
+          if (!direction) return;
 
-            const rr = key.includes("STRICT") ? 2 : 1.2;
+          const rr = key.includes("STRICT") ? 2 : 1.2;
+          const trade = buildTrade(price, direction, sys.capital, rr);
+          if (!trade) return;
 
-            const trade = buildTrade(price, direction, sys.capital, rr);
-            if (!trade) return;
+          sys.trade = trade;
+          changed = true;
 
-            sys.trade = trade;
-
-            // 🔔 ENTRY NOTIFICATION
-            new Notification(`${key} ENTRY ${direction}`, {
-              body: `Entry: ${price.toFixed(0)} | RR: ${rr}`,
-            });
+          if (Notification.permission === "granted") {
+            new Notification(`${key} ENTRY ${direction}`);
           }
+        });
 
-          // EXIT
+        // ===== EXIT =====
+        Object.entries(newSystems).forEach(([key, sys]) => {
           const t = sys.trade;
           if (!t) return;
 
@@ -150,145 +184,76 @@ export default function SmartDashboard() {
             if (price >= t.sl) result = "loss";
           }
 
-          if (result) {
-            const pnl =
-              result === "win" ? t.risk * t.size * t.rr : -t.risk * t.size;
+          if (!result) return;
 
-            sys.capital += pnl;
+          const pnl =
+            result === "win" ? t.risk * t.size * t.rr : -t.risk * t.size;
 
-            sys.history.unshift({
-              ...t,
-              exit: price,
-              pnl,
-              result,
-              date: new Date().toLocaleString(),
-            });
+          sys.capital += pnl;
 
-            // 🔔 EXIT NOTIFICATION
-            new Notification(`${key} ${result.toUpperCase()}`, {
-              body: `PnL: ${pnl.toFixed(2)}`,
-            });
+          sys.history.unshift({
+            ...t,
+            exit: price,
+            pnl,
+            result,
+            endTime: Date.now(),
+            duration: ((Date.now() - t.startTime) / 1000).toFixed(0),
+          });
 
-            sys.trade = null;
+          sys.trade = null;
+          changed = true;
+
+          if (Notification.permission === "granted") {
+            new Notification(`${key} ${result.toUpperCase()}`);
           }
         });
 
-        setSystems(newSystems);
+        if (changed) {
+          setSystems(newSystems);
+          saveState(newSystems);
+        }
       } catch (e) {
         console.log(e);
       }
     };
 
-    run();
-    interval = setInterval(run, 10000);
+    const interval = setInterval(run, 10000);
     return () => clearInterval(interval);
   }, []);
 
-  // ================= DELETE =================
-  const deleteTrade = (id, key) => {
-    setSystems((prev) => {
-      const copy = { ...prev };
-      copy[key].history = copy[key].history.filter((t) => t.id !== id);
-      return copy;
-    });
-  };
-
-  // ================= STATS =================
-  const getStats = (history) => {
-    const wins = history.filter((t) => t.result === "win").length;
-    const total = history.length;
-    return {
-      wins,
-      losses: total - wins,
-      total,
-      rate: total ? ((wins / total) * 100).toFixed(1) : 0,
-    };
-  };
-
+  // ===== UI =====
   return (
-    <div className="grid grid-cols-2 gap-4 p-4">
-      {Object.entries(systems).map(([key, sys]) => {
-        const stats = getStats(sys.history);
+    <div className="p-4">
+      <div className="mb-4">
+        <h3>Market Bias</h3>
+        {Object.entries(tfData).map(([k, v]) => (
+          <p key={k}>
+            {k}: {v}
+          </p>
+        ))}
+      </div>
 
-        return (
+      <div className="grid grid-cols-2 gap-4">
+        {Object.entries(systems).map(([key, sys]) => (
           <div key={key} className="p-3 bg-black/30 rounded">
             <h2>{key}</h2>
             <p>Capital: ${sys.capital.toFixed(2)}</p>
 
-            {/* ACTIVE TRADE */}
             {sys.trade ? (
               <div className="bg-green-700 p-2 mt-2 text-sm">
-                <p>
-                  <b>Type:</b> {sys.trade.type}
-                </p>
-                <p>
-                  <b>Entry:</b> {sys.trade.entry.toFixed(0)}
-                </p>
-                <p className="text-red-300">
-                  <b>SL:</b> {sys.trade.sl.toFixed(0)}
-                </p>
+                <p>Type: {sys.trade.type}</p>
+                <p>Entry: {sys.trade.entry.toFixed(0)}</p>
+                <p className="text-red-300">SL: {sys.trade.sl.toFixed(0)}</p>
                 <p className="text-green-300">
-                  <b>TP:</b> {sys.trade.final.toFixed(0)}
-                </p>
-                <p>
-                  <b>RR:</b> {sys.trade.rr}
+                  TP: {sys.trade.final.toFixed(0)}
                 </p>
               </div>
             ) : (
               <p>No Trade</p>
             )}
-
-            {/* STATS */}
-            <div className="mt-2 text-sm">
-              <p>Trades: {stats.total}</p>
-              <p>
-                Win: {stats.wins} | Loss: {stats.losses}
-              </p>
-              <p>Win Rate: {stats.rate}%</p>
-            </div>
-
-            {/* HISTORY HEADER */}
-            <button
-              className="mt-2 text-blue-400"
-              onClick={() =>
-                setOpenHistory((prev) => ({
-                  ...prev,
-                  [key]: !prev[key],
-                }))
-              }
-            >
-              {openHistory[key] ? "Hide History ▲" : "Show History ▼"}
-            </button>
-
-            {/* HISTORY LIST */}
-            {openHistory[key] &&
-              sys.history.map((t) => (
-                <div
-                  key={t.id}
-                  className={`p-2 my-2 text-sm ${
-                    t.result === "win" ? "bg-green-600" : "bg-red-600"
-                  }`}
-                >
-                  <p>
-                    {t.type} | {t.result}
-                  </p>
-                  <p>Entry: {t.entry.toFixed(0)}</p>
-                  <p>Exit: {t.exit.toFixed(0)}</p>
-                  <p className="text-red-200">SL: {t.sl.toFixed(0)}</p>
-                  <p className="text-green-200">TP: {t.final.toFixed(0)}</p>
-                  <p>PnL: ${t.pnl.toFixed(2)}</p>
-
-                  <button
-                    onClick={() => deleteTrade(t.id, key)}
-                    className="text-xs mt-1"
-                  >
-                    ❌ Delete
-                  </button>
-                </div>
-              ))}
           </div>
-        );
-      })}
+        ))}
+      </div>
     </div>
   );
 }
